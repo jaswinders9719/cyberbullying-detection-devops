@@ -1,0 +1,1048 @@
+CODE
+
+
+
+import pandas as pd
+import re
+import nltk
+import warnings
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import LabelEncoder
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.svm import LinearSVC
+from sklearn.metrics import classification_report, accuracy_score
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.svm import LinearSVC
+from sklearn.metrics import accuracy_score, classification_report
+
+
+from transformers import DistilBertTokenizerFast, TFDistilBertForSequenceClassification
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
+
+# Download NLTK resources
+nltk.download('stopwords', quiet=True)
+nltk.download('wordnet', quiet=True)
+nltk.download('omw-1.4', quiet=True)
+import warnings
+warnings.filterwarnings("ignore")
+
+
+# Load dataset
+df = pd.read_csv("./cyberbullying_tweets.csv")
+df.drop(df[df['cyberbullying_type'] == 'other_cyberbullying'].index, inplace = True)
+# Initialize stopwords and lemmatizer
+stop_words = set(nltk.corpus.stopwords.words('english'))
+lemmatizer = nltk.stem.WordNetLemmatizer()
+
+
+# In[3]:
+
+
+df.head()
+
+
+# In[4]:
+
+
+df['cyberbullying_type'].value_counts()
+
+
+# In[5]:
+
+
+import matplotlib.pyplot as plt
+df['cyberbullying_type'].value_counts().plot(kind='bar', title="cyberbullying_type Distribution")
+plt.show()
+
+
+# In[6]:
+
+
+def clean_tweet_advanced(text):
+    import re
+    from nltk.corpus import stopwords
+    from nltk.stem import WordNetLemmatizer
+
+    stop_words = set(stopwords.words("english"))
+    lemmatizer = WordNetLemmatizer()
+
+    text = text.lower()  # Normalize case
+    text = re.sub(r"http\S+|@\w+|#|[^\w\s]|\d+", "", text)  # Remove URLs, mentions, hashtags, punctuation, digits
+    text = re.sub(r"\s+", " ", text).strip()  # Remove extra spaces
+
+    words = text.split()
+    words = [lemmatizer.lemmatize(word) for word in words if word not in stop_words]  # Lemmatize and remove stopwords
+
+    return " ".join(words)
+
+
+# In[7]:
+
+
+from sklearn.linear_model import RidgeClassifier
+
+# Apply cleaning
+df["clean_text"] = df["tweet_text"].apply(clean_tweet_advanced)
+
+# Encode target labels
+label_encoder = LabelEncoder()
+df["encoded_label"] = label_encoder.fit_transform(df["cyberbullying_type"])
+
+# Split dataset
+X_train, X_test, y_train, y_test = train_test_split(
+    df["clean_text"], df["encoded_label"], test_size=0.2, random_state=42
+)
+
+# Define only the requested classical models: Logistic Regression and RidgeClassifier
+models = {
+    "Logistic Regression": LogisticRegression(max_iter=200),
+    "Ridge Classifier": RidgeClassifier(),   # ridge-style linear classifier
+    "random forest": RandomForestClassifier(),
+    "naive bayes": MultinomialNB(),
+    "svm": LinearSVC()
+}
+
+# Compare classical models and select best one
+best_model = None
+best_score = 0
+best_pipeline = None
+
+print("🔍 Training classical ML models...\n")
+
+for name, clf in models.items():
+    print(f"\n🧠 {name}")
+    pipeline = Pipeline([
+        ("tfidf", TfidfVectorizer(ngram_range=(1, 3), max_features=5000)),
+        ("clf", clf)
+    ])
+    pipeline.fit(X_train, y_train)
+    y_pred = pipeline.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+
+    print(f"🔍 Accuracy: {acc * 100:.2f}%")
+    print("📊 Classification Report:")
+    print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
+
+    if acc > best_score:
+        best_score = acc
+        best_model = name
+        best_pipeline = pipeline
+
+
+
+print("\n🔁 Switching to Deep Learning models (DistilBERT)...\n")
+
+from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification, Trainer, TrainingArguments
+from torch.utils.data import Dataset
+import torch, numpy as np
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report
+import time
+
+start_time = time.time()
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Using:", device)
+
+# --- 1. Load tokenizer + model ---
+tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-uncased")
+model = DistilBertForSequenceClassification.from_pretrained(
+    "distilbert-base-uncased",
+    num_labels=len(label_encoder.classes_)
+).to(device)
+
+# --- 2. Create dataset wrapper ---
+class TextDataset(Dataset):
+    def __init__(self, texts, labels):
+        self.texts = list(texts)
+        self.labels = list(labels)
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        item = tokenizer(
+            self.texts[idx],
+            padding="max_length",
+            truncation=True,
+            max_length=64,  # Reduced from 128
+            return_tensors="pt"
+        )
+        item = {k: v.squeeze(0) for k, v in item.items()}
+        item["labels"] = torch.tensor(self.labels[idx])
+        return item
+
+# Use smaller subset for training if dataset is large
+if len(X_train) > 5000:
+    X_train_small = X_train[:5000]
+    y_train_small = y_train[:5000]
+    print(f"Using reduced dataset: {len(X_train_small)} samples")
+else:
+    X_train_small = X_train
+    y_train_small = y_train
+
+train_ds = TextDataset(X_train_small, y_train_small)
+test_ds = TextDataset(X_test, y_test)
+
+# --- 3. Metrics ---
+def compute_metrics(pred):
+    labels = pred.label_ids
+    preds = np.argmax(pred.predictions, axis=1)
+    acc = accuracy_score(labels, preds)
+    p,r,f1,_ = precision_recall_fscore_support(labels, preds, average="weighted", zero_division=0)
+    return {"accuracy": acc, "precision": p, "recall": r, "f1": f1}
+
+# --- 4. Training setup - OPTIMIZED ---
+args = TrainingArguments(
+    output_dir="./distilbert_simple",
+    num_train_epochs=1,  # Reduced from 2
+    per_device_train_batch_size=32,  # Increased batch size
+    per_device_eval_batch_size=32,
+    eval_strategy="steps",  # More frequent evaluation
+    eval_steps=100,  # Evaluate every 100 steps
+    logging_steps=50,
+    save_strategy="no",
+    fp16=torch.cuda.is_available(),
+    report_to=[],
+    dataloader_num_workers=2 if device == "cuda" else 0,  # Parallel loading
+    gradient_accumulation_steps=1,
+    warmup_steps=50,  # Faster convergence
+    learning_rate=2e-5,  # Explicit learning rate
+    max_steps=300,  # Limit total training steps
+)
+
+trainer = Trainer(
+    model=model,
+    args=args,
+    train_dataset=train_ds,
+    eval_dataset=test_ds,
+    compute_metrics=compute_metrics
+)
+
+# --- 5. Train with timing ---
+print("Training DistilBERT...")
+train_start = time.time()
+trainer.train()
+train_time = time.time() - train_start
+print(f"Training completed in {train_time:.2f} seconds")
+
+# --- 6. Evaluate ---
+print("\n📈 DistilBERT Evaluation:")
+eval_start = time.time()
+results = trainer.evaluate()
+eval_time = time.time() - eval_start
+print(results)
+print(f"Evaluation completed in {eval_time:.2f} seconds")
+
+# Classification report
+print("\n📊 Classification Report:")
+preds = trainer.predict(test_ds).predictions
+preds = np.argmax(preds, axis=1)
+print(classification_report(y_test, preds, target_names=label_encoder.classes_))
+
+# Save best model
+trainer.save_model("./distilbert_simple")
+tokenizer.save_pretrained("./distilbert_simple")
+
+total_time = time.time() - start_time
+print(f"\n⏰ Total execution time: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
+print("\n🏆 Best Overall Model: DistilBERT with Accuracy:", results['eval_accuracy'] * 100)
+
+
+# In[13]:
+
+
+# In[14]:
+
+
+import sys
+print(sys.version)
+
+
+# In[15]:
+
+
+import torch
+print("Torch version:", torch.__version__)
+print("CUDA available:", torch.cuda.is_available())
+
+
+
+
+
+from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification
+import torch
+
+# Load tokenizer + model
+tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-uncased")
+
+model = DistilBertForSequenceClassification.from_pretrained(
+    "distilbert-base-uncased",
+    num_labels=len(label_encoder.classes_)   # number of classes in your dataset
+)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+model.eval()
+
+
+# In[20]:
+
+
+import shap
+
+
+# In[21]:
+
+
+import shap
+from lime.lime_text import LimeTextExplainer
+import torch
+import numpy as np
+
+print("\n SHAP for Classical Model (TF-IDF + Best Classifier)")
+
+# Extract TF-IDF vectorizer & classifier
+vectorizer = best_pipeline.named_steps["tfidf"]
+clf = best_pipeline.named_steps["clf"]
+
+# safe input helper: replace empty/whitespace, truncate very long texts
+def safe_texts(items, max_chars=1500, empty_token="[EMPTY]"):
+    texts = [str(t) for t in items]
+    out = []
+    for t in texts:
+        t = t.strip()
+        if not t:
+            t = empty_token
+        if len(t) > max_chars:
+            t = t[:max_chars]
+        out.append(t)
+    return out
+
+# prepare sample (single item) and a small batch for plotting
+sample_text = safe_texts([X_test.iloc[0]])[0]
+sample_batch = safe_texts(X_test.iloc[:5])
+
+print("\n📝 Sample text:", sample_text)
+
+# model wrapper: accepts iterable of raw texts, returns numpy (n_samples, n_classes)
+def model_proba(texts):
+    X_vec = vectorizer.transform(texts)
+    return clf.predict_proba(X_vec)
+
+# Try text-level masker first (recommended for TF-IDF text models)
+try:
+    masker = shap.maskers.Text()               # IMPORTANT: provide a masker
+    explainer = shap.Explainer(model_proba, masker, output_names=getattr(clf, "classes_", None))
+    shap_values = explainer([sample_text])     # pass a list of raw strings
+    print("Using Text masker explainer (token-level SHAP).")
+    shap.plots.text(shap_values[0])
+except Exception as e_text:
+    print("Text masker explainer failed:", repr(e_text))
+    # fallback: TreeExplainer on numeric TF-IDF features (small background only)
+    try:
+        bg_n = min(200, len(X_train))
+        background = vectorizer.transform(X_train.iloc[:bg_n]).toarray()   # SMALL only
+        explainer = shap.TreeExplainer(clf, data=background)
+        X_sample = vectorizer.transform(sample_batch).toarray()
+        shap_values = explainer.shap_values(X_sample)
+        print("Using TreeExplainer on TF-IDF features.")
+        feat_names = vectorizer.get_feature_names_out()
+        # for multi-class, pick a class index (0..K-1). Here we pick index 1 if exists else 0.
+        class_idx = 1 if isinstance(shap_values, list) and len(shap_values) > 1 else 0
+        shap.summary_plot(shap_values[class_idx], X_sample, feature_names=feat_names)
+    except Exception as e_tree:
+        print("TreeExplainer fallback also failed:", repr(e_tree))
+        raise
+
+# --------------------------
+# LIME for Classical Model
+# --------------------------
+class_names = list(label_encoder.classes_)
+lime_explainer = LimeTextExplainer(class_names=class_names)
+
+lime_exp = lime_explainer.explain_instance(
+    sample_text,
+    classifier_fn=lambda x: clf.predict_proba(vectorizer.transform(x)),
+    num_features=10
+)
+
+# If running in notebook: show_in_notebook; otherwise get the html/text
+try:
+    lime_exp.show_in_notebook()
+except Exception:
+    print(lime_exp.as_list())
+
+# --------------------------
+# SHAP for DistilBERT Model
+# --------------------------
+print("\n SHAP for DistilBERT Model (Transformers)")
+
+def bert_predict(texts):
+    enc = tokenizer(
+        list(texts),
+        padding=True,
+        truncation=True,
+        max_length=64,
+        return_tensors="pt"
+    ).to(device)
+
+    with torch.no_grad():
+        outputs = model(**enc)
+    return outputs.logits.softmax(dim=1).cpu().numpy()
+
+# safe background samples for BERT (small)
+background_samples = safe_texts(X_train.iloc[:20].tolist())
+
+
+# Use tokenizer as masker for the transformer (tokenizer implements tokenization)
+try:
+    bert_masker = tokenizer    # shap will treat this param as a masker for text tokenizers
+    bert_explainer = shap.Explainer(bert_predict, bert_masker, output_names=getattr(model.config, "id2label", None))
+    shap_values_bert = bert_explainer([sample_text])
+    print("BERT explainer created.")
+    shap.plots.text(shap_values_bert[0])
+except Exception as e_bert:
+    print("BERT SHAP explainer failed:", repr(e_bert))
+    # As a fallback, try text masker (less optimal) or skip
+    try:
+        masker = shap.maskers.Text()
+        bert_explainer = shap.Explainer(bert_predict, masker)
+        shap_values_bert = bert_explainer([sample_text])
+        shap.plots.text(shap_values_bert[0])
+    except Exception as e_fallback:
+        print("Fallback BERT explainer also failed:", repr(e_fallback))
+
+# --------------------------
+# LIME for DistilBERT
+# --------------------------
+print("\n LIME for DistilBERT Model")
+lime_exp_bert = lime_explainer.explain_instance(
+    sample_text,
+    classifier_fn=bert_predict,
+    num_features=10
+)
+
+try:
+    lime_exp_bert.show_in_notebook()
+except Exception:
+    print(lime_exp_bert.as_list())
+
+print("\n SHAP & LIME Visualizations Completed!")
+
+
+
+# Select 5 random samples from the original dataset
+sample_df = df.sample(n=5, random_state=42)
+sample_texts = sample_df['tweet_text'].tolist()
+cleaned_samples = sample_df['clean_text'].tolist()
+
+# Predict using the best pipeline
+sample_preds = best_pipeline.predict(cleaned_samples)
+
+# Display predictions
+results_df = pd.DataFrame({
+    "Original Text": sample_texts,
+    "Cleaned Text": cleaned_samples,
+    "Actual Label": label_encoder.inverse_transform(sample_df["encoded_label"]),
+    "Predicted Label": label_encoder.inverse_transform(sample_preds)
+})
+
+print("\n📌 Predictions on Randomly Selected Tweets:")
+print(results_df)
+
+
+# In[24]:
+
+
+df["encoded_label"].value_counts()
+
+
+# In[25]:
+
+
+import joblib
+
+joblib.dump(best_pipeline, "best_model.pkl")
+joblib.dump(label_encoder, "label_encoder.pkl")
+
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[43]:
+
+
+import pandas as pd
+import numpy as np
+import re
+import string
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+
+
+# ----------------------------
+# Load
+# ----------------------------
+df = pd.read_excel("202305_CYBERBYSTANDER.xlsx")
+
+df.head()
+df.info()
+df.isnull().sum()
+df.duplicated().sum()
+
+
+
+
+# In[44]:
+
+
+# ----------------------------
+# Basic cleaning: drop null tweet_id
+# ----------------------------
+df_cleaned = df.dropna(subset=["tweet_id"]).reset_index(drop=True)
+print("Rows after dropping null tweet_id values:", df_cleaned.shape)
+cols_to_drop = ["sentiment", "Class label", "Bystander Roles Label"]
+df_cleaned = df_cleaned.drop(columns=cols_to_drop)
+
+print("Shape after dropping columns:", df_cleaned.shape)
+df_cleaned.info()
+df_cleaned.head()
+
+
+# In[45]:
+
+
+# ----------------------------
+# EDA
+# ----------------------------
+
+tox_cols = [
+    "Insult", "Threat", "Identity_Attack",
+    "Profanity", "Toxicity", "Severe_Toxicity"
+]
+
+# Distribution of toxicity-related scores
+df[tox_cols].hist(figsize=(12, 8))
+plt.show()
+
+# Top toxic tweets
+print(
+    df.sort_values(by="Toxicity", ascending=False)[["text", "Toxicity"]].head(10)
+)
+
+# Toxicity vs Retweet Count
+sns.scatterplot(x=df["Toxicity"], y=df["retweet_count"])
+plt.title("Toxicity vs Retweet Count")
+plt.show()
+
+
+# ----------------------------
+# Final feature table
+# ----------------------------
+
+final_features = [
+    "text",
+    "Insult", "Threat", "Identity_Attack",
+    "Profanity", "Toxicity", "Severe_Toxicity"
+]
+
+df_final = df_cleaned[final_features] \
+    .dropna(subset=["text"]) \
+    .reset_index(drop=True)
+
+print(df_final.head())
+
+
+# ----------------------------
+# Scale regression targets
+# ----------------------------
+
+scaler = MinMaxScaler()
+df_final[tox_cols] = scaler.fit_transform(df_final[tox_cols])
+
+
+# ----------------------------
+# Text cleaning
+# ----------------------------
+
+def clean_text(text):
+    text = str(text).lower()
+    text = re.sub(r"@\w+|\#", "", text)          # mentions + hashtag symbol
+    text = re.sub(r"https?:\/\/\S+", "", text)   # URLs
+    text = text.translate(str.maketrans("", "", string.punctuation))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+df_final["text"] = df_final["text"].apply(clean_text)
+
+print(df_final.head())
+
+
+# In[46]:
+
+
+# Save cleaned dataset (same behavior)
+cleaned_file_path = "cleaned_cyberbullying_dataset.csv"
+df_final.to_csv(cleaned_file_path, index=False)
+
+df_final.info()
+df_final.head()
+
+
+
+# In[47]:
+
+
+# ----------------------------
+# TF-IDF + splits (same behavior)
+# ----------------------------
+tfidf_vectorizer = TfidfVectorizer(max_features=2000, stop_words="english")
+X_text_tfidf = tfidf_vectorizer.fit_transform(df_final["text"])
+
+y_regression = df_final[tox_cols]
+
+X_train_reg, X_test_reg, y_train_reg, y_test_reg = train_test_split(
+    X_text_tfidf, y_regression, test_size=0.2, random_state=42
+)
+
+
+# In[48]:
+
+
+from sklearn.ensemble import (
+    RandomForestRegressor,
+    GradientBoostingRegressor
+)
+from sklearn.linear_model import LinearRegression
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.neural_network import MLPRegressor
+from sklearn.multioutput import MultiOutputRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+from xgboost import XGBRegressor
+import pandas as pd
+
+
+# -----------------------------
+# 1) Models (same set)
+# -----------------------------
+
+
+reg_pool = {
+    "RandomForest": RandomForestRegressor(random_state=42),
+    "LinearRegression": LinearRegression(),
+    "KNN": KNeighborsRegressor(),
+    "GradientBoosting": GradientBoostingRegressor(),
+    "MLP": MLPRegressor(max_iter=1000, random_state=42),
+    "XGBRegressor": XGBRegressor(objective="reg:squarederror")
+}
+
+# -----------------------------
+# 2) Containers for results
+# -----------------------------
+
+reg_rows = []
+
+
+# -----------------------------
+# 4) Multi-output regression evaluation (ALL OUTPUTS)
+# -----------------------------
+target_names = list(y_train_reg.columns)  # keeps your original column names
+
+for model_name, base_model in reg_pool.items():
+    wrapper = MultiOutputRegressor(base_model)
+    wrapper.fit(X_train_reg, y_train_reg)
+
+    pred = wrapper.predict(X_test_reg)
+
+    # arrays of length = num_outputs
+    mse_vals = mean_squared_error(y_test_reg, pred, multioutput="raw_values")
+    r2_vals = r2_score(y_test_reg, pred, multioutput="raw_values")
+
+    row = {"Model": model_name}
+
+    # expand into columns dynamically
+    for j, target in enumerate(target_names):
+        row[f"{target} MSE"] = round(float(mse_vals[j]), 4)
+        row[f"{target} R2"] = round(float(r2_vals[j]), 4)
+
+    reg_rows.append(row)
+
+
+
+# In[49]:
+
+
+df = pd.DataFrame(reg_rows).round(4)
+
+mse_cols = ["Model"] + [c for c in df.columns if "MSE" in c]
+r2_cols  = ["Model"] + [c for c in df.columns if "R2" in c]
+
+print("\n🔹 Mean Squared Error (per target)")
+print(df[mse_cols].to_string(index=False))
+
+print("\n🔹 R² Score (per target)")
+print(df[r2_cols].to_string(index=False))
+
+
+
+# In[51]:
+
+
+import joblib
+
+# -----------------------------
+# Persist trained artifacts
+# -----------------------------
+vec_path = "vectorizer.pkl"
+cls_path = "cls_multi_model.pkl"
+reg_path = "reg_multi_model.pkl"
+
+joblib.dump(tfidf_vectorizer, vec_path)
+joblib.dump(clf, cls_path)
+joblib.dump(rf_multi_reg, reg_path)
+
+print(f"Saved: {vec_path}, {cls_path}, {reg_path}")
+
+
+# In[ ]:
+
+
+
+
+WEB CODE
+import os
+import re
+import numpy as np
+import streamlit as st
+import joblib
+import shap
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+from lime.lime_text import LimeTextExplainer
+import streamlit.components.v1 as components
+
+# Optional BERT
+BERT_AVAILABLE = False
+try:
+    import torch
+    from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification
+    BERT_AVAILABLE = True
+except Exception:
+    BERT_AVAILABLE = False
+
+# ---------------------------
+# Page setup
+# ---------------------------
+st.set_page_config(page_title="Cyberbullying Classifier + SHAP + LIME", layout="wide")
+st.title("Cyberbullying Tweet Classifier")
+st.caption("Classical TF-IDF pipeline . Includes SHAP + LIME explanations.")
+
+# ---------------------------
+# NLTK setup (quiet but robust)
+# ---------------------------
+@st.cache_resource
+def ensure_nltk():
+    try:
+        nltk.data.find("corpora/stopwords")
+    except LookupError:
+        nltk.download("stopwords")
+    try:
+        nltk.data.find("corpora/wordnet")
+    except LookupError:
+        nltk.download("wordnet")
+    try:
+        nltk.data.find("corpora/omw-1.4")
+    except LookupError:
+        nltk.download("omw-1.4")
+
+ensure_nltk()
+STOP_WORDS = set(stopwords.words("english"))
+LEMM = WordNetLemmatizer()
+
+def clean_tweet_advanced(text: str) -> str:
+    text = str(text).lower()
+    text = re.sub(r"http\S+|@\w+|#|[^\w\s]|\d+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return "[EMPTY]"
+    words = text.split()
+    words = [LEMM.lemmatize(w) for w in words if w not in STOP_WORDS]
+    out = " ".join(words).strip()
+    return out if out else "[EMPTY]"
+
+# ---------------------------
+# Helpers: probability wrappers
+# ---------------------------
+def softmax(z):
+    z = np.array(z)
+    z = z - np.max(z, axis=1, keepdims=True)
+    ez = np.exp(z)
+    return ez / (np.sum(ez, axis=1, keepdims=True) + 1e-12)
+
+def decision_to_proba(dec):
+    dec = np.array(dec)
+    # binary decision_function can be shape (n,) -> convert to (n,2)
+    if dec.ndim == 1:
+        dec = np.vstack([-dec, dec]).T
+    return softmax(dec)
+
+# ---------------------------
+# Load classical artifacts
+# ---------------------------
+@st.cache_resource
+def load_classical(best_model_path="best_model.pkl", encoder_path="label_encoder.pkl"):
+    pipe = joblib.load(best_model_path)
+    le = joblib.load(encoder_path)
+    return pipe, le
+
+
+def classical_predict_proba(pipe, texts):
+    """
+    Returns probs (n, K) even if classifier lacks predict_proba.
+    """
+    # Pipeline supports predict_proba only if final estimator does
+    if hasattr(pipe, "predict_proba"):
+        try:
+            return pipe.predict_proba(texts)
+        except Exception:
+            pass
+
+    # Fallback: decision_function -> softmax
+    if hasattr(pipe, "decision_function"):
+        dec = pipe.decision_function(texts)
+        return decision_to_proba(dec)
+
+    # Last resort: predict -> one-hot
+    preds = pipe.predict(texts)
+    n = len(texts)
+    k = len(np.unique(preds))
+    probs = np.zeros((n, k), dtype=float)
+    for i, p in enumerate(preds):
+        probs[i, int(p)] = 1.0
+    return probs
+
+def bert_predict_proba(tokenizer, model, device, texts, max_len=64):
+    enc = tokenizer(
+        list(texts),
+        padding=True,
+        truncation=True,
+        max_length=max_len,
+        return_tensors="pt"
+    ).to(device)
+    with torch.no_grad():
+        logits = model(**enc).logits
+    probs = torch.softmax(logits, dim=1).cpu().numpy()
+    return probs
+
+# >>> TOXICITY ADDITION >>>
+TOX_AVAILABLE = False
+
+@st.cache_resource
+def load_toxicity_artifacts(vec_path="toxicity_vectorizer.pkl", reg_path="rf_multi_reg.pkl"):
+    vec = joblib.load(vec_path)
+    reg = joblib.load(reg_path)
+    return vec, reg
+
+def toxicity_predict(reg_vec, reg_model, text):
+    Xt = reg_vec.transform([text])
+    y = reg_model.predict(Xt)  # (1,6) for your MultiOutputRegressor
+    y = np.array(y).reshape(-1)
+    return y
+
+TOX_COLS = ["Insult", "Threat", "Identity_Attack", "Profanity", "Toxicity", "Severe_Toxicity"]
+# <<< TOXICITY ADDITION <<<
+
+# ---------------------------
+# UI: model selection + load
+# ---------------------------
+with st.sidebar:
+    st.header("Model")
+    model_mode = st.radio(
+        "Choose model",
+        options=["Classical (best_model.pkl)"],
+        index=0 if not (BERT_AVAILABLE and os.path.isdir("./distilbert_simple")) else 0
+    )
+
+    do_clean = st.checkbox("Apply cleaning (recommended)", value=True)
+    show_debug = st.checkbox("Show debug info", value=False)
+
+    # >>> TOXICITY ADDITION >>>
+    st.divider()
+    st.header("Toxicity Regression")
+    enable_toxicity = st.checkbox("Show toxicity regression output", value=True)
+    # <<< TOXICITY ADDITION <<<
+
+# Load artifacts
+pipe, le = load_classical()
+
+bert_ok = BERT_AVAILABLE and os.path.isdir("./distilbert_simple")
+if model_mode.startswith("DistilBERT") and not bert_ok:
+    st.warning("DistilBERT not available. Install torch/transformers and ensure ./distilbert_simple exists. Falling back to Classical.")
+    model_mode = "Classical (best_model.pkl)"
+
+if model_mode.startswith("DistilBERT") and bert_ok:
+    tokenizer, bert_model, bert_device = load_bert()
+
+class_names = list(le.classes_)
+lime_explainer = LimeTextExplainer(class_names=class_names)
+
+# >>> TOXICITY ADDITION >>>
+tox_vec = None
+tox_reg = None
+tox_ok = False
+if enable_toxicity:
+    try:
+        tox_ok = os.path.exists("toxicity_vectorizer.pkl") and os.path.exists("rf_multi_reg.pkl")
+        if tox_ok:
+            tox_vec, tox_reg = load_toxicity_artifacts("toxicity_vectorizer.pkl", "rf_multi_reg.pkl")
+        else:
+            st.sidebar.warning("Toxicity files not found: toxicity_vectorizer.pkl and/or rf_multi_reg.pkl")
+    except Exception as e:
+        st.sidebar.error(f"Failed to load toxicity regressor: {repr(e)}")
+        tox_ok = False
+# <<< TOXICITY ADDITION <<<
+
+# ---------------------------
+# Input
+# ---------------------------
+default_text = "You are such a loser. Nobody likes you."
+raw_text = st.text_area("Enter tweet text", value=default_text, height=140)
+
+text_used = clean_tweet_advanced(raw_text) if do_clean else (raw_text.strip() if raw_text.strip() else "[EMPTY]")
+
+colA, colB = st.columns([1, 1], gap="large")
+
+# ---------------------------
+# Predict
+# ---------------------------
+if st.button("Predict + Explain", type="primary"):
+
+    # --- classification prediction ---
+    if model_mode.startswith("Classical"):
+        probs = classical_predict_proba(pipe, [text_used])[0]
+        pred_id = int(np.argmax(probs))
+        pred_label = le.inverse_transform([pred_id])[0]
+    else:
+        probs = bert_predict_proba(tokenizer, bert_model, bert_device, [text_used])[0]
+        pred_id = int(np.argmax(probs))
+        pred_label = class_names[pred_id]
+
+    with colA:
+        st.subheader("Prediction")
+        st.write(f"**Text used:** {text_used}")
+        st.write(f"**Predicted class:** {pred_label}")
+        st.write("**Probabilities:**")
+        for i, cn in enumerate(class_names):
+            st.write(f"{cn}: {probs[i]:.4f}")
+
+        # >>> TOXICITY ADDITION >>>
+        if enable_toxicity:
+            st.divider()
+            st.subheader("Toxicity Regression (No SHAP/LIME)")
+            if tox_ok:
+                # Important: toxicity model was trained on its own cleaning function in your notebook.
+                # If you used different cleaning there, align it here.
+                tox_input = text_used  # using same cleaned text for consistency
+                tox_vals = toxicity_predict(tox_vec, tox_reg, tox_input)
+
+                for name, val in zip(TOX_COLS, tox_vals):
+                    st.write(f"**{name}:** {float(val):.4f}")
+            else:
+                st.info("Toxicity regression not available (missing pkl files).")
+        # <<< TOXICITY ADDITION <<<
+
+    # ---------------------------
+    # LIME (classification only)
+    # ---------------------------
+    with colB:
+        st.subheader("LIME Explanation (Classification)")
+        try:
+            if model_mode.startswith("Classical"):
+                def lime_fn(x):
+                    x = [clean_tweet_advanced(t) if do_clean else (t.strip() if t.strip() else "[EMPTY]") for t in x]
+                    return classical_predict_proba(pipe, x)
+            else:
+                def lime_fn(x):
+                    x = [clean_tweet_advanced(t) if do_clean else (t.strip() if t.strip() else "[EMPTY]") for t in x]
+                    return bert_predict_proba(tokenizer, bert_model, bert_device, x)
+
+            lime_exp = lime_explainer.explain_instance(
+                text_used,
+                classifier_fn=lime_fn,
+                num_features=12
+            )
+            lime_html = lime_exp.as_html()
+            components.html(lime_html, height=420, scrolling=True)
+        except Exception as e:
+            st.error(f"LIME failed: {repr(e)}")
+
+    st.divider()
+
+    # ---------------------------
+    # SHAP (classification only)
+    # ---------------------------
+    st.subheader("SHAP Explanation (token impact) — Classification Only")
+
+    try:
+        masker = shap.maskers.Text()
+
+        if model_mode.startswith("Classical"):
+            def shap_fn(texts):
+                texts = [clean_tweet_advanced(t) if do_clean else (t.strip() if t.strip() else "[EMPTY]") for t in texts]
+                return classical_predict_proba(pipe, texts)
+            explainer = shap.Explainer(shap_fn, masker, output_names=class_names)
+        else:
+            def shap_fn(texts):
+                texts = [clean_tweet_advanced(t) if do_clean else (t.strip() if t.strip() else "[EMPTY]") for t in texts]
+                return bert_predict_proba(tokenizer, bert_model, bert_device, texts)
+            explainer = shap.Explainer(shap_fn, masker, output_names=class_names)
+
+        sv = explainer([text_used])
+
+        out = shap.plots.text(sv[0], display=False)
+        if hasattr(out, "data"):
+            html = out.data
+        elif isinstance(out, str):
+            html = out
+        else:
+            html = str(out)
+
+        components.html(shap.getjs() + html, height=420, scrolling=True)
+
+    except Exception as e:
+        st.error(f"SHAP failed: {repr(e)}")
+        st.info("If SHAP fails on your machine, update shap: `pip install -U shap`")
+
+    if show_debug:
+        st.divider()
+        st.subheader("Debug")
+        st.write("Model mode:", model_mode)
+        st.write("Cleaning:", do_clean)
+        # >>> TOXICITY ADDITION >>>
+        st.write("Toxicity enabled:", enable_toxicity)
+        st.write("Toxicity artifacts loaded:", tox_ok)
+        # <<< TOXICITY ADDITION <<<
+
+
+
+
+
+
