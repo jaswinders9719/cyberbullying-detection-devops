@@ -221,6 +221,10 @@ __pycache__/
 .DS_Store
 .vscode/
 *.pyc
+.venv/
+env/
+__pycache__/
+
 # DevOps Project Models
 *.pkl
 *.safetensors
@@ -228,6 +232,3 @@ __pycache__/
 artifacts_best/
 artifacts_classical/
 artifacts_distilbert/
-
-reg_multi_model.pkl
-vectorizer.pkl
